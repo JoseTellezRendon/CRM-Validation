@@ -5,7 +5,8 @@ import warnings
 
 def read_dataset(filepath: str | pathlib.Path = None,
                  dataset_name: str = "baseline",
-                 date_cols: dict = None) -> pd.DataFrame:
+                 date_cols: dict = None,
+                 encoding: str = 'latin') -> pd.DataFrame | None:
 
     warning_message_absolute_path = """Warning:
                         The filepath provided for the {} dataset is absolute.
@@ -18,7 +19,7 @@ def read_dataset(filepath: str | pathlib.Path = None,
                         """
 
     if filepath is None:
-        return pd.DataFrame()
+        return None
     else:
         if isinstance(filepath, str):
             filepath = pathlib.Path(filepath)
@@ -31,12 +32,12 @@ def read_dataset(filepath: str | pathlib.Path = None,
         if filepath.suffix == ".xlsx":
             temp_df = pd.read_excel(filepath)
         elif filepath.suffix == ".csv":
-            temp_df = pd.read_csv(filepath)
+            temp_df = pd.read_csv(filepath, encoding=encoding)
         elif filepath.suffix is None:
             warnings.warn(
                 warning_msg_no_extension.format(dataset_name)
             )
-            temp_df = pd.read_csv(filepath)
+            temp_df = pd.read_csv(filepath, encoding=encoding)
         else:
             raise Exception("""Unrecognized file format.
             Supported file extensions: .csv .xlsx""")
@@ -54,8 +55,8 @@ def generate_warn_message(cols_list: list, warn_type: str = 'type', dataset_name
     if warn_type == 'type':
         submessage_template = """
                 Column: {}
-                Real Type: {}
-                Expected Type: {}"""
+                    Real Type: {}
+                    Expected Type: {}"""
         for col_dict in cols_list:
             message += submessage_template.format(
                 col_dict['col_name'],
@@ -109,17 +110,48 @@ class Validator:
         self.__existence_checked = False
         self.__equality_checked = False
 
+    @property
+    def name_mapping(self):
+        return self.__name_mapping
+
+    @property
+    def type_mapping(self):
+        return self.__type_mapping
+
+    @property
+    def col_id(self):
+        return self.__col_id
+
+    @col_id.setter
+    def col_id(self, new_col: str):
+        self.__col_id = new_col
+        self.__existence_checked = False
+        self.__equality_checked = False
+
+    @property
+    def existence_result(self):
+        return self.__existence_result
+
+    @property
+    def equality_result(self):
+        return self.__equality_result
+
     def __init__(self,
                  baseline_filepath: pathlib.Path | str = None,
                  validate_filepath: pathlib.Path | str = None,
                  column_mapping: list = None,
                  baseline_date_cols: dict = None,
                  validate_date_cols: dict = None,
+                 col_id: str = None,
+                 baseline_encoding: str = 'latin',
+                 validate_encoding: str = 'utf-8',
                  ):
 
         # Inner variables for processing
+        self.__origin_rows_not_in_target = None
         self.__name_mapping = None
         self.__type_mapping = None
+        self.__actual_origin_data = None
         self.__actual_target_data = None
 
         # Inner variables for storing validation results
@@ -127,6 +159,8 @@ class Validator:
         self.__equality_result = None
         self.__row_difference = None
         self.__col_difference = None
+        self.__duplicated_rows = None
+        self.__target_rows_not_in_origin = None
 
         # Flags for processing
         self.__mapping_checked = False
@@ -134,22 +168,26 @@ class Validator:
         self.__equality_checked = False
 
         # BASELINE & VALIDATE DATASETS
-        self.__origin_data = read_dataset(baseline_filepath, "baseline", date_cols=baseline_date_cols)
-        self.__target_data = read_dataset(validate_filepath, "validate", date_cols=validate_date_cols)
+        self.__origin_data = read_dataset(baseline_filepath, "baseline",
+                                          date_cols=baseline_date_cols,
+                                          encoding=baseline_encoding)
+        self.__target_data = read_dataset(validate_filepath, "validate",
+                                          date_cols=validate_date_cols,
+                                          encoding=validate_encoding)
+
+        # IDENTIFIER COLUMN
+        self.__col_id = col_id if col_id else self.__origin_data.columns.tolist()
 
         # COLUMN MAPPING
-        self.__col_map = None
+        self.__col_map = column_mapping
         if column_mapping:
             self.validate_col_map()
-
-        # Add column mapping printing
-        #   - useful for debugging before actual validation
 
     def validate_col_map(self):
         """Checks if the mapping specified is valid given the datasets configured.
          The mapping must follow the next format:
          - A list of dictionaries, with the following fields:
-             - validate_col_name: str -> Column Name (str)
+             - baseline_col_name: str -> Column Name (str)
              - baseline_col_type: str -> Origin Type (str) [Optional]
              - validate_col_name: str -> Column Name (str)
              - validate_col_type: str -> Target Type (str) [Optional]
@@ -160,7 +198,7 @@ class Validator:
         After a successful complete check (both datasets), the actual column mapping will be generated.
         """
 
-        if not self.col_map:
+        if not self.__col_map:
             raise Exception("No mapping configured to validate!")
 
         if self.__mapping_checked:
@@ -175,11 +213,11 @@ class Validator:
             No {} dataset has been configured. Cannot validate mapping for this dataset.
             """
 
-        if not self.origin_data:
+        if self.__origin_data is None:
             warnings.warn(warn_message.format("baseline"))
             check_origin = False
 
-        if not self.target_data:
+        if self.__target_data is None:
             warnings.warn(warn_message.format("validate"))
             check_target = False
 
@@ -192,7 +230,7 @@ class Validator:
             name_map_temp = {}
             type_map_temp = {}
 
-            for k_dic in self.col_map:
+            for k_dic in self.__col_map:
                 # Check baseline column exists
                 origin_cur_col_result = {}
                 target_cur_col_result = {}
@@ -205,43 +243,45 @@ class Validator:
 
                 if check_origin:
                     origin_cur_col_result = self.__validate_column(cur_origin_col_name, cur_origin_col_type, 'origin')
-
                     if not origin_cur_col_result['exists']:
                         origin_cols_missing.append(cur_origin_col_name)
-                    elif not origin_cur_col_result['type']:
+                    elif origin_cur_col_result['type_error']:
                         origin_cur_col_type_error = {
                             'col_name': cur_origin_col_name,
-                            **origin_cur_col_result['type_error']
+                            **origin_cur_col_result['type']
                         }
                         origin_cols_mistype.append(origin_cur_col_type_error)
 
                 # Check validate column exists
                 if check_target:
                     target_cur_col_result = self.__validate_column(cur_target_col_name, cur_target_col_type, 'target')
-
                     if not target_cur_col_result['exists']:
                         target_cols_missing.append(cur_target_col_name)
-                    elif not target_cur_col_result['type']:
+                    elif target_cur_col_result['type_error']:
                         target_cur_col_type_error = {
                             'col_name': cur_target_col_name,
-                            **target_cur_col_result['type_error']
+                            **target_cur_col_result['type']
                         }
                         target_cols_mistype.append(target_cur_col_type_error)
 
                 # Add name and type mapping to temp variables if respective columns exist on both sides
                 if origin_cur_col_result['exists'] and target_cur_col_result['exists']:
                     name_map_temp[cur_target_col_name] = cur_origin_col_name
-                    #
-                    #
-                    #
-                    #
-                    #
-                    type_map_temp[cur_target_col_name] = cur_common_col_type if cur_common_col_type else None
-                    #
-                    #
-                    #
-                    #
-                    #
+                    # If common type has been specified, use it (forces conversion during checks)
+                    if cur_common_col_type:
+                        if cur_origin_col_type != cur_common_col_type:
+                            warnings.warn("    Common data type does not match origin data type. Validation"
+                                          "    will force common data type.")
+                        type_map_temp[cur_origin_col_name] = cur_common_col_type
+                    # if not, use the origin type
+                    else:
+                        # Issue warning if ACTUAL type of the column is not equal to expected type
+                        # --- An idea might be, when no matching types, force string for comparison (not implemented)
+                        if target_cur_col_result['type_error']:
+                            warnings.warn("    Expected data type does not match origin data type. Validation"
+                                          "    will force expected type if present, otherwise, baseline type.")
+                        type_map_temp[cur_origin_col_name] = cur_origin_col_type if cur_origin_col_type else \
+                            target_cur_col_result['type']['real_type']
 
             # If any type is incorrect, throw a warning.
             if origin_cols_mistype:
@@ -270,36 +310,70 @@ class Validator:
             return
 
         # Only do something if both datasets are configured.
-        if self.__target_data and self.__origin_data:
+        if self.__target_data is not None and self.__origin_data is not None:
             # If mapping configured, apply it
             if self.__name_mapping:
                 self.__actual_target_data = self.__target_data.rename(columns=self.__name_mapping)
             else:
-                warnings.warn("""Warning: No mapping configured. Assuming both datasets have the same column names.""")
+                warnings.warn("""Warning:
+                No mapping configured. Assuming both datasets have the same column names and types.""")
                 self.__actual_target_data = self.__target_data
+                self.__name_mapping = {col_name: col_name for col_name in self.__origin_data.columns}
+                self.__type_mapping = {col_name: col_type for col_name, col_type in self.__origin_data.dtypes.items()}
+            self.__actual_origin_data = self.__origin_data
 
             # How to verify existence:
             # 0. Verify data shape
-            # 0.1. Number of rows
-            self.__row_difference = self.__origin_data.shape[0] - self.__actual_target_data.shape[0]
-            # 0.2. Columns
-            origin_not_in_target = set(self.__origin_data.columns) - set(self.__actual_target_data.columns)
-            target_not_in_origin = set(self.__actual_target_data.columns) - set(self.__origin_data.columns)
-            self.__col_difference = {'origin_not_in_target': origin_not_in_target,
-                                     'target_not_in_origin': target_not_in_origin}
+            # 0.1 Count duplicates
+            self.__duplicated_rows = {'origin': self.__actual_origin_data.duplicated(subset=self.__col_id).sum(),
+                                      'target': self.__actual_target_data.duplicated(subset=self.__col_id).sum()}
+
+            # 0.2 Remove duplicates, otherwise the Magic (step 4) doesn't work
+            self.__actual_origin_data = self.__actual_origin_data.drop_duplicates(subset=self.__col_id)
+            self.__actual_target_data = self.__actual_target_data.drop_duplicates(subset=self.__col_id)
+            # 0.3 Number of rows
+            self.__row_difference = self.__actual_origin_data.shape[0] - self.__actual_target_data.shape[0]
+            # 0.4 Columns
+            origin_cols_not_in_target = set(self.__actual_origin_data.columns) - set(self.__actual_target_data.columns)
+            target_cols_not_in_origin = set(self.__actual_target_data.columns) - set(self.__actual_origin_data.columns)
+            self.__col_difference = {'origin_cols_not_in_target': origin_cols_not_in_target,
+                                     'target_cols_not_in_origin': target_cols_not_in_origin}
 
             # 1. Align columns
-            self.__actual_target_data = self.__actual_target_data[self.__origin_data.columns]
+            # 1.1 Select columns from origin and target that are in the column mapping
+            self.__actual_origin_data = self.__actual_origin_data[self.__name_mapping.values()]
+            # 1.2 Target columns selected based on origin columns to guarantee same column order
+            self.__actual_target_data = self.__actual_target_data[self.__actual_origin_data.columns]
 
             # 2. Match data types for the columns
-            for col_name, col_type in self.__origin_data.dtypes.items():
-                pass
+            for col_name, col_type in self.__type_mapping.items():
+                if self.__actual_origin_data[col_name].dtype != col_type:
+                    self.__actual_origin_data[col_name] = self.__actual_origin_data[col_name].astype(col_type)
+                if self.__actual_target_data[col_name].dtype != col_type:
+                    self.__actual_target_data[col_name] = self.__actual_target_data[col_name].astype(col_type)
 
             # 3. Align rows
-
+            # 3.0 Generate a column to mark rows that are different in both datasets
+            self.__actual_origin_data['check'] = 0
+            self.__actual_target_data['check'] = 0
+            # 3.1 Use the id columns as index
+            self.__actual_origin_data.set_index(self.__col_id)
+            self.__actual_target_data.set_index(self.__col_id)
+            # 3.2 Align based on index (which are the indexes now)
+            origin_temp, target_temp = self.__actual_origin_data.align(self.__actual_target_data, axis=0)
+            # 3.3 Rows in one dataset that are not in the other are marked as NAs in 'check' column
+            #     These rows are separated from existence and equality check
+            self.__target_rows_not_in_origin = origin_temp[origin_temp.check.isna()].reset_index().drop(columns='check')
+            self.__origin_rows_not_in_target = target_temp[target_temp.check.isna()].reset_index().drop(columns='check')
+            # 3.4 Filter out records from target not in origin
+            self.__actual_origin_data = origin_temp[~origin_temp.check.isna()].reset_index().drop(columns='check')
+            self.__actual_target_data = target_temp[~origin_temp.check.isna()].reset_index().drop(columns='check')
 
             # 4. Magic
-
+            # Using NA values, if there are NAs in the target (isNA == True) that are not in origin (isNA == False),
+            # flag them.
+            # Boolean operation: not(Origin_isNA) & Target_isNA
+            self.__existence_result = ~self.__actual_origin_data.isna() & self.__actual_target_data.isna()
 
             self.__existence_checked = True
 
@@ -307,7 +381,6 @@ class Validator:
             raise Exception("No datasets configured.")
 
     def check_equality(self):
-        pass
         if self.__equality_checked:
             warnings.warn("""Equality has already been checked for the current configuration.
             Modify the datasets or column mapping and try again.""")
@@ -317,21 +390,25 @@ class Validator:
             self.check_existence()
 
         # Only do something if both datasets are configured.
-        if self.target_data and self.origin_data:
+        if self.__target_data  is not None and self.__origin_data is not None:
             # Mapping already applied during existence check
 
             # How to verify equality:
+            # 0. Verify data shape (done in existence check)
             # 1. Align columns (done in existence check)
             # 2. Match data types for the columns (done in existence check)
             # 3. Align rows (done in existence check)
-            # 4. origin.equals(target)
-            self.__equality_result = self.__origin_data.equals(self.__actual_target_data)
+            # 4. Magic
+            # Because the columns and rows are already aligned, a direct comparison does the work
+            # origin.compare(target)
+            self.__equality_result = self.__origin_data.compare(self.__actual_target_data,
+                                                                result_names=('origin', 'target'))
 
     def __validate_column(self, col_name: str, col_type: str, dataset: str = 'origin') -> dict:
         if dataset == 'origin':
-            temp_dataset = self.origin_data
+            temp_dataset = self.__origin_data
         elif dataset == 'target':
-            temp_dataset = self.target_data
+            temp_dataset = self.__target_data
         else:
             raise Exception(f"Incorrect value passed. Expected 'origin' or 'target', received '{dataset}'")
 
@@ -341,13 +418,19 @@ class Validator:
             return_dic['exists'] = True
             if col_type:
                 if temp_dataset[col_name].dtype == col_type:
-                    return_dic['type'] = True
+                    return_dic['type_error'] = False
                 else:
-                    return_dic['type'] = False
-                    return_dic['type_error'] = {
+                    return_dic['type_error'] = True
+                    return_dic['type'] = {
                         'real_type': temp_dataset[col_name].dtype,
                         'expected_type': col_type
                     }
+            else:
+                return_dic['type_error'] = True
+                return_dic['type'] = {
+                    'real_type': temp_dataset[col_name].dtype,
+                    'expected_type': "NA"
+                }
         else:
             return_dic['exists'] = False
 
