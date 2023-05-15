@@ -6,7 +6,8 @@ import warnings
 def read_dataset(filepath: str | pathlib.Path = None,
                  dataset_name: str = "baseline",
                  date_cols: dict = None,
-                 encoding: str = 'latin') -> pd.DataFrame | None:
+                 encoding: str = 'latin',
+                 ) -> pd.DataFrame | None:
 
     warning_message_absolute_path = """Warning:
                         The filepath provided for the {} dataset is absolute.
@@ -45,6 +46,7 @@ def read_dataset(filepath: str | pathlib.Path = None,
         if date_cols:
             for col_name, date_format in date_cols.items():
                 temp_df[col_name] = pd.to_datetime(temp_df[col_name], format=date_format)
+
         return temp_df
 
 
@@ -136,6 +138,26 @@ class Validator:
     def equality_result(self):
         return self.__equality_result
 
+    @property
+    def origin_data_for_validation(self):
+        return self.__origin_data_for_validation
+
+    @property
+    def target_data_for_validation(self):
+        return self.__target_data_for_validation
+
+    @property
+    def origin_rows_not_in_target(self):
+        return  self.__origin_rows_not_in_target
+
+    @property
+    def target_rows_not_in_origin(self):
+        return  self.__target_rows_not_in_origin
+
+    @property
+    def duplicated_rows(self):
+        return self.__duplicated_rows
+
     def __init__(self,
                  baseline_filepath: pathlib.Path | str = None,
                  validate_filepath: pathlib.Path | str = None,
@@ -145,14 +167,15 @@ class Validator:
                  col_id: str = None,
                  baseline_encoding: str = 'latin',
                  validate_encoding: str = 'utf-8',
+                 unify_text: bool = False,
+                 text_cols: list = None,
                  ):
 
         # Inner variables for processing
-        self.__origin_rows_not_in_target = None
         self.__name_mapping = None
         self.__type_mapping = None
-        self.__actual_origin_data = None
-        self.__actual_target_data = None
+        self.__origin_data_for_validation = None
+        self.__target_data_for_validation = None
 
         # Inner variables for storing validation results
         self.__existence_result = None
@@ -160,20 +183,27 @@ class Validator:
         self.__row_difference = None
         self.__col_difference = None
         self.__duplicated_rows = None
+        self.__origin_rows_not_in_target = None
         self.__target_rows_not_in_origin = None
 
-        # Flags for processing
+        # Flags for different validations
         self.__mapping_checked = False
         self.__existence_checked = False
         self.__equality_checked = False
 
+        # Variables for pre-processing
+        self.__unify_text = unify_text
+        self.__text_cols = text_cols
+
         # BASELINE & VALIDATE DATASETS
         self.__origin_data = read_dataset(baseline_filepath, "baseline",
                                           date_cols=baseline_date_cols,
-                                          encoding=baseline_encoding)
+                                          encoding=baseline_encoding,
+                                          )
         self.__target_data = read_dataset(validate_filepath, "validate",
                                           date_cols=validate_date_cols,
-                                          encoding=validate_encoding)
+                                          encoding=validate_encoding,
+                                          )
 
         # IDENTIFIER COLUMN
         self.__col_id = col_id if col_id else self.__origin_data.columns.tolist()
@@ -279,7 +309,7 @@ class Validator:
                         # --- An idea might be, when no matching types, force string for comparison (not implemented)
                         if target_cur_col_result['type_error']:
                             warnings.warn("    Expected data type does not match origin data type. Validation"
-                                          "    will force expected type if present, otherwise, baseline type.")
+                                          "    will force expected type if present, otherwise, real type.")
                         type_map_temp[cur_origin_col_name] = cur_origin_col_type if cur_origin_col_type else \
                             target_cur_col_result['type']['real_type']
 
@@ -313,67 +343,72 @@ class Validator:
         if self.__target_data is not None and self.__origin_data is not None:
             # If mapping configured, apply it
             if self.__name_mapping:
-                self.__actual_target_data = self.__target_data.rename(columns=self.__name_mapping)
+                self.__target_data_for_validation = self.__target_data.rename(columns=self.__name_mapping)
             else:
                 warnings.warn("""Warning:
                 No mapping configured. Assuming both datasets have the same column names and types.""")
-                self.__actual_target_data = self.__target_data
+                self.__target_data_for_validation = self.__target_data
                 self.__name_mapping = {col_name: col_name for col_name in self.__origin_data.columns}
                 self.__type_mapping = {col_name: col_type for col_name, col_type in self.__origin_data.dtypes.items()}
-            self.__actual_origin_data = self.__origin_data
+            self.__origin_data_for_validation = self.__origin_data
 
             # How to verify existence:
             # 0. Verify data shape
             # 0.1 Count duplicates
-            self.__duplicated_rows = {'origin': self.__actual_origin_data.duplicated(subset=self.__col_id).sum(),
-                                      'target': self.__actual_target_data.duplicated(subset=self.__col_id).sum()}
+            self.__duplicated_rows = {'origin': self.__origin_data_for_validation.duplicated(subset=self.__col_id).sum(),
+                                      'target': self.__target_data_for_validation.duplicated(subset=self.__col_id).sum()}
 
             # 0.2 Remove duplicates, otherwise the Magic (step 4) doesn't work
-            self.__actual_origin_data = self.__actual_origin_data.drop_duplicates(subset=self.__col_id)
-            self.__actual_target_data = self.__actual_target_data.drop_duplicates(subset=self.__col_id)
+            self.__origin_data_for_validation = self.__origin_data_for_validation.drop_duplicates(subset=self.__col_id)
+            self.__target_data_for_validation = self.__target_data_for_validation.drop_duplicates(subset=self.__col_id)
             # 0.3 Number of rows
-            self.__row_difference = self.__actual_origin_data.shape[0] - self.__actual_target_data.shape[0]
+            self.__row_difference = self.__origin_data_for_validation.shape[0] - self.__target_data_for_validation.shape[0]
             # 0.4 Columns
-            origin_cols_not_in_target = set(self.__actual_origin_data.columns) - set(self.__actual_target_data.columns)
-            target_cols_not_in_origin = set(self.__actual_target_data.columns) - set(self.__actual_origin_data.columns)
+            origin_cols_not_in_target = set(self.__origin_data_for_validation.columns) - set(self.__target_data_for_validation.columns)
+            target_cols_not_in_origin = set(self.__target_data_for_validation.columns) - set(self.__origin_data_for_validation.columns)
             self.__col_difference = {'origin_cols_not_in_target': origin_cols_not_in_target,
                                      'target_cols_not_in_origin': target_cols_not_in_origin}
+            # 0.5 Text cleaning, if specified
+            #     Text cleaning is done at this point, so that previous validations that are internal for each dataset
+            #     are not impacted by the text cleaning
+            if self.__unify_text:
+                self.__clean_text_columns()
 
             # 1. Align columns
             # 1.1 Select columns from origin and target that are in the column mapping
-            self.__actual_origin_data = self.__actual_origin_data[self.__name_mapping.values()]
+            self.__origin_data_for_validation = self.__origin_data_for_validation[self.__name_mapping.values()]
             # 1.2 Target columns selected based on origin columns to guarantee same column order
-            self.__actual_target_data = self.__actual_target_data[self.__actual_origin_data.columns]
+            self.__target_data_for_validation = self.__target_data_for_validation[self.__origin_data_for_validation.columns]
 
             # 2. Match data types for the columns
             for col_name, col_type in self.__type_mapping.items():
-                if self.__actual_origin_data[col_name].dtype != col_type:
-                    self.__actual_origin_data[col_name] = self.__actual_origin_data[col_name].astype(col_type)
-                if self.__actual_target_data[col_name].dtype != col_type:
-                    self.__actual_target_data[col_name] = self.__actual_target_data[col_name].astype(col_type)
+                if self.__origin_data_for_validation[col_name].dtype != col_type:
+                    self.__origin_data_for_validation[col_name] = self.__origin_data_for_validation[col_name].astype(col_type)
+                if self.__target_data_for_validation[col_name].dtype != col_type:
+                    self.__target_data_for_validation[col_name] = self.__target_data_for_validation[col_name].astype(col_type)
 
             # 3. Align rows
             # 3.0 Generate a column to mark rows that are different in both datasets
-            self.__actual_origin_data['check'] = 0
-            self.__actual_target_data['check'] = 0
+            self.__origin_data_for_validation['check'] = 0
+            self.__target_data_for_validation['check'] = 0
             # 3.1 Use the id columns as index
-            self.__actual_origin_data.set_index(self.__col_id)
-            self.__actual_target_data.set_index(self.__col_id)
+            self.__origin_data_for_validation.set_index(self.__col_id, inplace=True)
+            self.__target_data_for_validation.set_index(self.__col_id, inplace=True)
             # 3.2 Align based on index (which are the indexes now)
-            origin_temp, target_temp = self.__actual_origin_data.align(self.__actual_target_data, axis=0)
+            origin_temp, target_temp = self.__origin_data_for_validation.align(self.__target_data_for_validation, axis=0)
             # 3.3 Rows in one dataset that are not in the other are marked as NAs in 'check' column
             #     These rows are separated from existence and equality check
             self.__target_rows_not_in_origin = origin_temp[origin_temp.check.isna()].reset_index().drop(columns='check')
             self.__origin_rows_not_in_target = target_temp[target_temp.check.isna()].reset_index().drop(columns='check')
             # 3.4 Filter out records from target not in origin
-            self.__actual_origin_data = origin_temp[~origin_temp.check.isna()].reset_index().drop(columns='check')
-            self.__actual_target_data = target_temp[~origin_temp.check.isna()].reset_index().drop(columns='check')
+            self.__origin_data_for_validation = origin_temp[~origin_temp.check.isna()].reset_index().drop(columns='check')
+            self.__target_data_for_validation = target_temp[~origin_temp.check.isna()].reset_index().drop(columns='check')
 
             # 4. Magic
             # Using NA values, if there are NAs in the target (isNA == True) that are not in origin (isNA == False),
             # flag them.
             # Boolean operation: not(Origin_isNA) & Target_isNA
-            self.__existence_result = ~self.__actual_origin_data.isna() & self.__actual_target_data.isna()
+            self.__existence_result = ~self.__origin_data_for_validation.isna() & self.__target_data_for_validation.isna()
 
             self.__existence_checked = True
 
@@ -401,8 +436,31 @@ class Validator:
             # 4. Magic
             # Because the columns and rows are already aligned, a direct comparison does the work
             # origin.compare(target)
-            self.__equality_result = self.__origin_data.compare(self.__actual_target_data,
-                                                                result_names=('origin', 'target'))
+            self.__equality_result = self.__origin_data_for_validation.compare(
+                self.__target_data_for_validation,
+                result_names=('origin', 'target'))
+
+    def __clean_text_columns(self) -> None:
+        if self.__text_cols is None:
+            warnings.warn("No columns specified as text. Text columns are not modified.")
+        else:
+            for text_col in self.__text_cols:
+                # Unify apostrophe
+                self.__origin_data_for_validation.loc[:, text_col] = \
+                        self.__origin_data_for_validation[text_col].str.replace(u'\u0092', u"\u0027")
+                self.__origin_data_for_validation.loc[:, text_col] = \
+                    self.__origin_data_for_validation[text_col].str.replace(u'’', u"\u0027")
+
+                self.__target_data_for_validation.loc[:, text_col] = \
+                    self.__target_data_for_validation[text_col].str.replace(u'\u0092', u"\u0027")
+                self.__target_data_for_validation.loc[:, text_col] = \
+                    self.__target_data_for_validation[text_col].str.replace(u'’', u"\u0027")
+
+                # # Make all lowercase
+                # self.__origin_data_for_validation[text_col] = \
+                #                         self.__origin_data_for_validation[text_col].str.lower()
+                # self.__target_data_for_validation[text_col] = \
+                #                         self.__target_data_for_validation[text_col].str.lower()
 
     def __validate_column(self, col_name: str, col_type: str, dataset: str = 'origin') -> dict:
         if dataset == 'origin':
