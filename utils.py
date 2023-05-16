@@ -158,6 +158,14 @@ class Validator:
     def duplicated_rows(self):
         return self.__duplicated_rows
 
+    @property
+    def row_difference(self):
+        return self.__row_difference
+
+    @property
+    def col_difference(self):
+        return self.__col_difference
+
     def __init__(self,
                  baseline_filepath: pathlib.Path | str = None,
                  validate_filepath: pathlib.Path | str = None,
