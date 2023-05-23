@@ -45,7 +45,7 @@ def read_dataset(filepath: str | pathlib.Path = None,
 
         if date_cols:
             for col_name, date_format in date_cols.items():
-                temp_df[col_name] = pd.to_datetime(temp_df[col_name], format=date_format)
+                temp_df[col_name] = pd.to_datetime(temp_df[col_name], format=date_format, errors='coerce')
 
         return temp_df
 
@@ -148,11 +148,11 @@ class Validator:
 
     @property
     def origin_rows_not_in_target(self):
-        return  self.__origin_rows_not_in_target
+        return self.__origin_rows_not_in_target
 
     @property
     def target_rows_not_in_origin(self):
-        return  self.__target_rows_not_in_origin
+        return self.__target_rows_not_in_origin
 
     @property
     def duplicated_rows(self):
@@ -345,7 +345,7 @@ class Validator:
         if self.__existence_checked:
             warnings.warn("""Existence has already been checked for the current configuration.
             Modify the datasets or column mapping and try again.""")
-            return
+            return self.__existence_result
 
         # Only do something if both datasets are configured.
         if self.__target_data is not None and self.__origin_data is not None:
@@ -420,20 +420,22 @@ class Validator:
 
             self.__existence_checked = True
 
+            return self.__existence_result
+
         else:
-            raise Exception("No datasets configured.")
+            raise Exception("Both datasets (origin & target) must be configured to check existence.")
 
     def check_equality(self):
         if self.__equality_checked:
             warnings.warn("""Equality has already been checked for the current configuration.
             Modify the datasets or column mapping and try again.""")
-            return
+            return self.__equality_result
 
         if not self.__existence_checked:
             self.check_existence()
 
         # Only do something if both datasets are configured.
-        if self.__target_data  is not None and self.__origin_data is not None:
+        if self.__target_data is not None and self.__origin_data is not None:
             # Mapping already applied during existence check
 
             # How to verify equality:
@@ -447,6 +449,9 @@ class Validator:
             self.__equality_result = self.__origin_data_for_validation.compare(
                 self.__target_data_for_validation,
                 result_names=('origin', 'target'))
+            return self.__equality_result
+        else:
+            raise Exception("Both datasets (origin & target) must be configured to check equality.")
 
     def __clean_text_columns(self) -> None:
         if self.__text_cols is None:
