@@ -390,10 +390,19 @@ class Validator:
 
             # 2. Match data types for the columns
             for col_name, col_type in self.__type_mapping.items():
-                if self.__origin_data_for_validation[col_name].dtype != col_type:
-                    self.__origin_data_for_validation[col_name] = self.__origin_data_for_validation[col_name].astype(col_type)
-                if self.__target_data_for_validation[col_name].dtype != col_type:
-                    self.__target_data_for_validation[col_name] = self.__target_data_for_validation[col_name].astype(col_type)
+                if col_name in ["ID", "PIDM_KEY", "VETC_NUMBER"]:
+                    warnings.warn(f"Column {col_name} is going to be casted as a string!")
+                    self.__origin_data_for_validation[col_name] = self.__origin_data_for_validation[
+                        col_name].astype('string').str.replace(".0", "")
+                    self.__target_data_for_validation[col_name] = self.__target_data_for_validation[
+                        col_name].astype('string').str.replace(".0", "")
+                else:
+                    if self.__origin_data_for_validation[col_name].dtype != col_type:
+                        self.__origin_data_for_validation[col_name] = self.__origin_data_for_validation[col_name].astype(
+                            col_type)
+                    if self.__target_data_for_validation[col_name].dtype != col_type:
+                        self.__target_data_for_validation[col_name] = self.__target_data_for_validation[col_name].astype(
+                            col_type)
 
             # 3. Align rows
             # 3.0 Generate a column to mark rows that are different in both datasets
@@ -405,9 +414,9 @@ class Validator:
             # 3.2 Align based on index (which are the indexes now)
             origin_temp, target_temp = self.__origin_data_for_validation.align(self.__target_data_for_validation, axis=0)
             # 3.3 Rows in one dataset that are not in the other are marked as NAs in 'check' column
-            #     These rows are separated from existence and equality check
-            self.__target_rows_not_in_origin = origin_temp[origin_temp.check.isna()].reset_index().drop(columns='check')
-            self.__origin_rows_not_in_target = target_temp[target_temp.check.isna()].reset_index().drop(columns='check')
+            #     Extract them for possible analysis later on
+            self.__target_rows_not_in_origin = target_temp[origin_temp.check.isna()].reset_index().drop(columns='check')
+            self.__origin_rows_not_in_target = origin_temp[target_temp.check.isna()].reset_index().drop(columns='check')
             # 3.4 Filter out records from target not in origin
             self.__origin_data_for_validation = origin_temp[~origin_temp.check.isna()].reset_index().drop(columns='check')
             self.__target_data_for_validation = target_temp[~origin_temp.check.isna()].reset_index().drop(columns='check')
@@ -449,6 +458,11 @@ class Validator:
             self.__equality_result = self.__origin_data_for_validation.compare(
                 self.__target_data_for_validation,
                 result_names=('origin', 'target'))
+
+            # Add column ID(s) at the start of the dataframe
+            for idx, col_name in enumerate(self.__col_id):
+                self.__equality_result.insert(idx, col_name, self.__origin_data_for_validation[col_name])
+
             return self.__equality_result
         else:
             raise Exception("Both datasets (origin & target) must be configured to check equality.")
