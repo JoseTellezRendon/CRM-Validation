@@ -11,3 +11,4 @@ dependencies:
   - scipy=1.10.1
   - openpyxl=3.1.2
   - python>=3.10
+  - jupyterlab=4.0.0

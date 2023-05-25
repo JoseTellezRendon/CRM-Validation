@@ -5,8 +5,9 @@ import warnings
 
 def read_dataset(filepath: str | pathlib.Path = None,
                  dataset_name: str = "baseline",
-                 date_cols: dict = None,
                  encoding: str = 'latin',
+                 date_cols: dict = None,
+                 round_cols: dict = None,
                  ) -> pd.DataFrame | None:
 
     warning_message_absolute_path = """Warning:
@@ -46,6 +47,12 @@ def read_dataset(filepath: str | pathlib.Path = None,
         if date_cols:
             for col_name, date_format in date_cols.items():
                 temp_df[col_name] = pd.to_datetime(temp_df[col_name], format=date_format, errors='coerce')
+                if col_name == "HOLD_TO_DATE":
+                    temp_df[col_name] = temp_df[col_name].dt.date
+
+        if round_cols:
+            for col_name, n_decimals in round_cols.items():
+                temp_df[col_name] = temp_df[col_name].round(n_decimals)
 
         return temp_df
 
@@ -170,9 +177,11 @@ class Validator:
                  baseline_filepath: pathlib.Path | str = None,
                  validate_filepath: pathlib.Path | str = None,
                  column_mapping: list = None,
+                 col_id: str = None,
                  baseline_date_cols: dict = None,
                  validate_date_cols: dict = None,
-                 col_id: str = None,
+                 baseline_round_cols: dict = None,
+                 validate_round_cols: dict = None,
                  baseline_encoding: str = 'latin',
                  validate_encoding: str = 'utf-8',
                  unify_text: bool = False,
@@ -205,12 +214,14 @@ class Validator:
 
         # BASELINE & VALIDATE DATASETS
         self.__origin_data = read_dataset(baseline_filepath, "baseline",
-                                          date_cols=baseline_date_cols,
                                           encoding=baseline_encoding,
+                                          date_cols=baseline_date_cols,
+                                          round_cols=baseline_round_cols,
                                           )
         self.__target_data = read_dataset(validate_filepath, "validate",
-                                          date_cols=validate_date_cols,
                                           encoding=validate_encoding,
+                                          date_cols=validate_date_cols,
+                                          round_cols=validate_round_cols,
                                           )
 
         # IDENTIFIER COLUMN
