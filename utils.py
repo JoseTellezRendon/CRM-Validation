@@ -1,24 +1,290 @@
+from __future__ import annotations
+import numpy as np
 import pandas as pd
 import pathlib
 import warnings
+import math
+import re
+
+
+warning_message_absolute_path = """Warning:
+                        The filepath provided for the {} file is absolute.
+                        Check that the file is located in the exact path.
+                        Common errors can arise from passing absolute paths that reference an incorrect user folder.
+                        """
+warning_msg_no_extension = """Warning:
+                    The filepath provided for the {} file has no extension.
+                    Reading the file as a Comma-Separated Values (csv) file.
+                    """
+
+
+def find_key(dict_str, key_val):
+    try:
+        dict_var = eval(dict_str)
+    except Exception:
+        return False
+    if isinstance(dict_var, dict):
+        return key_val in dict_var
+    else:
+        return False
+
+
+def get_key_value(dict_str, key_val):
+    if find_key(dict_str, key_val):
+        return eval(dict_str)[key_val]
+    else:
+        return None
+
+
+def __create_col_map(map_buffer, search_key, map_col_name, map_col_type, map_col_xcheck):
+    """Specific function to generate column mapping for Numeric columns that will be rounded to a
+    number of decimal places, and Date columns"""
+    return {col_name: get_key_value(col_type, search_key) for col_name, col_type, col_xcheck in
+            zip(map_buffer[map_col_name], map_buffer[map_col_type], map_buffer[map_col_xcheck])
+            if find_key(col_type, search_key) and all([col_name is not np.nan, col_xcheck is not np.nan])}
+
+
+def data_validation_orchestrator(filepath: pathlib.Path | str = None,
+                                 data_base_folder: pathlib.Path | str = None,
+                                 encoding: str = None,
+                                 output_folder: pathlib.Path | str = '',
+                                 debug: bool = False):
+    if filepath is None:
+        return None
+    else:
+        if isinstance(filepath, str):
+            filepath = pathlib.Path(filepath)
+        if isinstance(data_base_folder, str):
+            data_base_folder = pathlib.Path(data_base_folder)
+        if isinstance(output_folder, str):
+            output_folder = pathlib.Path(output_folder)
+            if output_folder.exists() and not output_folder.is_dir():
+                raise Exception("Output folder specified already exists and is not a folder.")
+            else:
+                output_folder.mkdir(parents=True, exist_ok=True)
+
+        if filepath.is_absolute():
+            warnings.warn(
+                warning_message_absolute_path.format("orchestrator")
+            )
+
+        if filepath.suffix == ".xlsx":
+            table_mapping = pd.read_excel(filepath)
+        elif filepath.suffix == ".csv":
+            table_mapping = pd.read_csv(filepath, encoding=encoding)
+        elif filepath.suffix is None:
+            warnings.warn(
+                warning_msg_no_extension.format("orchestrator")
+            )
+            table_mapping = pd.read_csv(filepath, encoding=encoding)
+        else:
+            raise Exception("""Unrecognized file format.
+            Supported file extensions: .csv .xlsx""")
+
+        if not data_base_folder.is_dir():
+            raise Exception("""data_base_folder has to be a folder.""")
+
+    origin_filepath_col = 'origin_filename'
+    target_filepath_col = 'target_filename'
+    table_name_col = 'table_name'
+    origin_file_encoding = 'origin_encoding'
+    target_file_encoding = 'target_encoding'
+    is_join_field_col = 'join_field'  # To Be Used
+    is_id_field_col = 'id_field'
+    origin_field_col = 'origin_field'
+    origin_field_type_col = 'origin_type'
+    origin_ffill_col = 'origin_ffill'
+    target_field_col = 'target_field'
+    target_field_type_col = 'target_type'
+    target_ffill_col = 'target_ffill'
+    origin_prep_text = 'preprocessing'
+    origin_single_col_prep_code = 'preproc_pycode'
+    xwalk_filepath_col = 'crosswalk_file'
+    xwalk_sheetname_col = 'sheet_name'
+    xwalk_origin_val_col = 'origin_val_col'
+    xwalk_target_val_col = 'target_val_col'
+
+    table_groups = table_mapping.groupby([origin_filepath_col, target_filepath_col, table_name_col])
+
+    map_cols = [origin_field_col, origin_field_type_col,
+                target_field_col, target_field_type_col,
+                origin_single_col_prep_code,
+                origin_ffill_col, target_ffill_col,
+                xwalk_filepath_col, xwalk_sheetname_col, xwalk_origin_val_col, xwalk_target_val_col]
+
+    for (origin_file, target_file, table_name), mapping_df in table_groups:
+        print(f"****************************************************************************************")
+        print(f"{table_name}")
+        print(f"****************************************************************************************")
+        origin_filepath = data_base_folder / origin_file
+        target_filepath = data_base_folder / target_file
+        mapping_buffer = mapping_df[map_cols].to_dict('list')
+
+        if debug:
+            print("Mapping Buffer")
+            print(mapping_buffer)
+
+        mapping_dict = [{"baseline_col_name": origin_col,
+                         "validate_col_name": target_col,
+                         "common_col_type": origin_type}
+                        for origin_col, target_col, origin_type in
+                        zip(mapping_buffer[origin_field_col],
+                            mapping_buffer[target_field_col],
+                            mapping_buffer[origin_field_type_col])
+                        if all([origin_col is not np.nan, target_col is not np.nan])]
+        # col_id = mapping_df[mapping_df[is_id_field_col] == True][origin_field_col].to_list()
+        col_id = mapping_df[mapping_df[is_id_field_col]][origin_field_col].to_list()
+
+        column_preprocessing = {col_name: col_prep for col_name, col_prep in
+                                zip(mapping_buffer[origin_field_col], mapping_buffer[origin_single_col_prep_code])
+                                if all([not pd.isna(col_name), not pd.isna(col_prep)])
+                                }
+
+        column_crosswalk = {}
+        # Get Excel spreadsheet filepath and sheet name per field
+        crosswalk_buffer = {col_name: {'file': xwalk_file,
+                                       'sheet': sheet_name,
+                                       'origin_col': origin_col,
+                                       'target_col': target_col}
+                            for col_name, xwalk_file, sheet_name, origin_col, target_col in
+                            zip(mapping_buffer[origin_field_col],
+                                mapping_buffer[xwalk_filepath_col],
+                                mapping_buffer[xwalk_sheetname_col],
+                                mapping_buffer[xwalk_origin_val_col],
+                                mapping_buffer[xwalk_target_val_col])
+                            if all([xwalk_file is not np.nan, sheet_name is not np.nan,
+                                    origin_col is not np.nan, target_col is not np.nan])
+                            }
+
+        for col_name, xwalk_info in crosswalk_buffer.items():
+            # Read Excel sheet
+            xwalk_df = pd.read_excel(xwalk_info['file'], sheet_name=xwalk_info['sheet'])
+            # Generate dictionary in format {col_name: {search_val: replace_val}}
+            val_buffer = xwalk_df[[xwalk_info['origin_col'], xwalk_info['target_col']]].to_dict('list')
+            column_crosswalk[col_name] = {search_val: replace_val for search_val, replace_val in
+                                          zip(val_buffer[xwalk_info['origin_col']],
+                                              val_buffer[xwalk_info['target_col']])
+                                          }
+        # Remove empty crosswalks (for efficiency)
+        column_crosswalk = {k: v for k, v in column_crosswalk.items() if v}
+
+        origin_date_cols = __create_col_map(mapping_buffer, 'date', origin_field_col, origin_field_type_col,
+                                            target_field_col)
+        target_date_cols = __create_col_map(mapping_buffer, 'date', target_field_col, target_field_type_col,
+                                            origin_field_col)
+
+        # change type of date columns in mapping dict
+        temp_map_dict = []
+        for cur_col_map in mapping_dict:
+            temp_col_dict = {"baseline_col_name": cur_col_map["baseline_col_name"],
+                             "validate_col_name": cur_col_map["validate_col_name"]}
+            if 'date' not in cur_col_map['common_col_type']:
+                temp_col_dict["common_col_type"] = cur_col_map["common_col_type"]
+            else:
+                temp_col_dict["common_col_type"] = "date"
+            temp_map_dict.append(temp_col_dict)
+
+        mapping_dict = temp_map_dict
+
+        origin_round_cols = __create_col_map(mapping_buffer, 'round', origin_field_col, origin_field_type_col,
+                                             target_field_col)
+        target_round_cols = __create_col_map(mapping_buffer, 'round', target_field_col, target_field_type_col,
+                                             origin_field_col)
+
+        origin_encoding = mapping_df[origin_file_encoding].value_counts()
+        if len(origin_encoding) > 1:
+            print("Multiple encodings found for the same origin file. Using the most frequent")
+        target_encoding = mapping_df[target_file_encoding].value_counts()
+        if len(target_encoding) > 1:
+            print("Multiple encodings found for the same target file. Using the most frequent")
+        origin_encoding = origin_encoding.index[0]
+        target_encoding = target_encoding.index[0]
+
+        unify_text = False
+        text_cols = None
+
+        origin_cols_ffill = [col_name for col_name, col_ffill in
+                             zip(mapping_buffer[origin_field_col], mapping_buffer[origin_ffill_col])
+                             if (col_ffill and (col_ffill is not np.nan))]
+        target_cols_ffill = [col_name for col_name, col_ffill in
+                             zip(mapping_buffer[target_field_col], mapping_buffer[target_ffill_col])
+                             if (col_ffill and (col_ffill is not np.nan))]
+
+        if debug:
+            print(f"Origin filepath: {origin_filepath}")
+            print(f"Target filepath: {target_filepath}")
+            print(f"Mapping Dict: {mapping_dict}")
+            print(f"Column ID: {col_id}")
+            print(f"Column Preprocessing: {column_preprocessing}")
+            print(f"Column Crosswalk: {column_crosswalk}")
+            print(f"Origin Date Cols: {origin_date_cols}")
+            print(f"Target Date Cols: {target_date_cols}")
+            print(f"Origin Round Cols: {origin_round_cols}")
+            print(f"Target Round Cols: {target_round_cols}")
+            print(f"Origin encoding: {origin_encoding}")
+            print(f"Target encoding: {target_encoding}")
+            print(f"Unify Text: {unify_text}")
+            print(f"Text Columns: {text_cols}")
+            print(f"Origin ffill: {origin_cols_ffill}")
+            print(f"Target ffill: {target_cols_ffill}")
+            print()
+            print(table_mapping)
+
+        cur_validator = Validator(baseline_filepath=origin_filepath,
+                                  validate_filepath=target_filepath,
+                                  column_mapping=mapping_dict,
+                                  col_id=col_id,
+                                  column_preprocessing=column_preprocessing,
+                                  column_crosswalk=column_crosswalk,
+                                  baseline_date_cols=origin_date_cols,
+                                  validate_date_cols=target_date_cols,
+                                  baseline_round_cols=origin_round_cols,
+                                  validate_round_cols=target_round_cols,
+                                  baseline_encoding=origin_encoding,
+                                  validate_encoding=target_encoding,
+                                  unify_text=unify_text,
+                                  text_cols=text_cols,
+                                  origin_cols_ffill=origin_cols_ffill,
+                                  target_cols_ffill=target_cols_ffill,
+                                  )
+
+        cur_validator.check_existence()
+        print("Existence errors per Column")
+        print(cur_validator.existence_result.sum())
+        # Registers with existence flags
+        print()
+        print("Registers with existence flags")
+        print((cur_validator.existence_result.sum(axis=1) > 0).sum())
+        # Total existence flags
+        print()
+        print("Total existence flags")
+        print(cur_validator.existence_result.sum().sum())
+        print()
+        print("Row Difference")
+        print(cur_validator.row_difference)
+        print()
+        print("Col Difference")
+        print(cur_validator.col_difference)
+        print()
+        print("Dupplicated Rows")
+        print(cur_validator.duplicated_rows)
+        cur_validator.check_equality()
+
+        cur_validator.existence_result.to_excel(output_folder / f'{table_name}_Existence_Result.xlsx', index=False)
+        cur_validator.equality_result.rename(columns={'origin': 'Source', 'target': 'Workday'}).to_excel(
+            output_folder / f'{table_name}_Equality_Result.xlsx')
+        print(f"****************************************************************************************")
+        print(f"DONE")
+        print(f"****************************************************************************************")
+        print()
 
 
 def read_dataset(filepath: str | pathlib.Path = None,
-                 dataset_name: str = "baseline",
+                 dataset_name: str = "baseline dataset",
                  encoding: str = 'latin',
                  date_cols: dict = None,
                  round_cols: dict = None,
                  ) -> pd.DataFrame | None:
-
-    warning_message_absolute_path = """Warning:
-                        The filepath provided for the {} dataset is absolute.
-                        Check that the file is located in the exact path.
-                        Common errors can arise from passing absolute paths that reference an incorrect user folder.
-                        """
-    warning_msg_no_extension = """Warning:
-                        The filepath provided for the {} dataset has no extension.
-                        Reading the file as a Comma-Separated Values (csv) file.
-                        """
 
     if filepath is None:
         return None
@@ -334,14 +600,18 @@ class Validator:
 
             # If any type is incorrect, throw a warning.
             if origin_cols_mistype:
-                warnings.warn(generate_warn_message(origin_cols_mistype, warn_type='type', dataset_name='baseline'))
+                warnings.warn(generate_warn_message(origin_cols_mistype, warn_type='type',
+                                                    dataset_name='baseline dataset'))
             if target_cols_mistype:
-                warnings.warn(generate_warn_message(target_cols_mistype, warn_type='type', dataset_name='validate'))
+                warnings.warn(generate_warn_message(target_cols_mistype, warn_type='type',
+                                                    dataset_name='validate dataset'))
 
             # If any column is missing on either dataset, throw warning and end
             if origin_cols_missing or target_cols_missing:
-                warnings.warn(generate_warn_message(origin_cols_missing, warn_type='missing', dataset_name='baseline'))
-                warnings.warn(generate_warn_message(target_cols_missing, warn_type='missing', dataset_name='validate'))
+                warnings.warn(generate_warn_message(origin_cols_missing, warn_type='missing',
+                                                    dataset_name='baseline dataset'))
+                warnings.warn(generate_warn_message(target_cols_missing, warn_type='missing',
+                                                    dataset_name='validate dataset'))
             elif name_map_temp:
                 # Save mapping. Check if there is something saved in temp variable, as it checks for
                 # existence of respective columns on both datasets
