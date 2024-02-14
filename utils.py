@@ -1,27 +1,28 @@
 from __future__ import annotations
-import numpy as np
-import pandas as pd
+import os
+import sys
 import pathlib
 import warnings
+import pandas as pd
+import numpy as np
 import math
 import re
 
-
 warning_message_absolute_path = """Warning:
-                        The filepath provided for the {} file is absolute.
+                        The filepath provided for the {} dataset is absolute.
                         Check that the file is located in the exact path.
                         Common errors can arise from passing absolute paths that reference an incorrect user folder.
                         """
 warning_msg_no_extension = """Warning:
-                    The filepath provided for the {} file has no extension.
-                    Reading the file as a Comma-Separated Values (csv) file.
-                    """
+                        The filepath provided for the {} dataset has no extension.
+                        Reading the file as a Comma-Separated Values (csv) file.
+                        """
 
 
 def find_key(dict_str, key_val):
     try:
         dict_var = eval(dict_str)
-    except Exception:
+    except:
         return False
     if isinstance(dict_var, dict):
         return key_val in dict_var
@@ -48,7 +49,17 @@ def data_validation_orchestrator(filepath: pathlib.Path | str = None,
                                  data_base_folder: pathlib.Path | str = None,
                                  encoding: str = None,
                                  output_folder: pathlib.Path | str = '',
+                                 origin_name: str = 'Origin',
+                                 target_name: str = 'Target',
                                  debug: bool = False):
+    if debug:
+        print(f"""INPUT:
+        filepath:         {filepath}
+        data_base_folder: {data_base_folder}
+        encoding:         {encoding}
+        output_folder:    {output_folder}
+        debug:            {debug}""")
+
     if filepath is None:
         return None
     else:
@@ -58,14 +69,21 @@ def data_validation_orchestrator(filepath: pathlib.Path | str = None,
             data_base_folder = pathlib.Path(data_base_folder)
         if isinstance(output_folder, str):
             output_folder = pathlib.Path(output_folder)
-            if output_folder.exists() and not output_folder.is_dir():
-                raise Exception("Output folder specified already exists and is not a folder.")
+        if output_folder.exists():
+            if not output_folder.is_dir():
+                raise Exception("Output folder already exists and is not a folder!")
             else:
-                output_folder.mkdir(parents=True, exist_ok=True)
+                print("Output folder already exists.")
+        else:
+            if debug:
+                print("Creating output folder...")
+            output_folder.mkdir(parents=True, exist_ok=True)
+            if debug:
+                print("Output folder created.")
 
         if filepath.is_absolute():
             warnings.warn(
-                warning_message_absolute_path.format("orchestrator")
+                warning_message_absolute_path.format('mapping')
             )
 
         if filepath.suffix == ".xlsx":
@@ -74,7 +92,7 @@ def data_validation_orchestrator(filepath: pathlib.Path | str = None,
             table_mapping = pd.read_csv(filepath, encoding=encoding)
         elif filepath.suffix is None:
             warnings.warn(
-                warning_msg_no_extension.format("orchestrator")
+                warning_msg_no_extension.format('mapping')
             )
             table_mapping = pd.read_csv(filepath, encoding=encoding)
         else:
@@ -98,7 +116,7 @@ def data_validation_orchestrator(filepath: pathlib.Path | str = None,
     target_field_type_col = 'target_type'
     target_ffill_col = 'target_ffill'
     origin_prep_text = 'preprocessing'
-    origin_single_col_prep_code = 'preproc_pycode'
+    origin_prep_code = 'preproc_pycode'
     xwalk_filepath_col = 'crosswalk_file'
     xwalk_sheetname_col = 'sheet_name'
     xwalk_origin_val_col = 'origin_val_col'
@@ -108,7 +126,7 @@ def data_validation_orchestrator(filepath: pathlib.Path | str = None,
 
     map_cols = [origin_field_col, origin_field_type_col,
                 target_field_col, target_field_type_col,
-                origin_single_col_prep_code,
+                origin_prep_code,
                 origin_ffill_col, target_ffill_col,
                 xwalk_filepath_col, xwalk_sheetname_col, xwalk_origin_val_col, xwalk_target_val_col]
 
@@ -132,13 +150,15 @@ def data_validation_orchestrator(filepath: pathlib.Path | str = None,
                             mapping_buffer[target_field_col],
                             mapping_buffer[origin_field_type_col])
                         if all([origin_col is not np.nan, target_col is not np.nan])]
-        # col_id = mapping_df[mapping_df[is_id_field_col] == True][origin_field_col].to_list()
-        col_id = mapping_df[mapping_df[is_id_field_col]][origin_field_col].to_list()
+        col_id = mapping_df[mapping_df[is_id_field_col] == True][origin_field_col].to_list()
 
         column_preprocessing = {col_name: col_prep for col_name, col_prep in
-                                zip(mapping_buffer[origin_field_col], mapping_buffer[origin_single_col_prep_code])
+                                zip(mapping_buffer[origin_field_col], mapping_buffer[origin_prep_code])
                                 if all([not pd.isna(col_name), not pd.isna(col_prep)])
                                 }
+        if debug:
+            print("Column Preprocessing:")
+            print(column_preprocessing)
 
         column_crosswalk = {}
         # Get Excel spreadsheet filepath and sheet name per field
@@ -152,9 +172,13 @@ def data_validation_orchestrator(filepath: pathlib.Path | str = None,
                                 mapping_buffer[xwalk_sheetname_col],
                                 mapping_buffer[xwalk_origin_val_col],
                                 mapping_buffer[xwalk_target_val_col])
-                            if all([xwalk_file is not np.nan, sheet_name is not np.nan,
-                                    origin_col is not np.nan, target_col is not np.nan])
+                            if all([not pd.isna(xwalk_file), not pd.isna(sheet_name),
+                                    not pd.isna(origin_col), not pd.isna(target_col)])
                             }
+
+        if debug:
+            print("Crosswalk Buffer:")
+            print(crosswalk_buffer)
 
         for col_name, xwalk_info in crosswalk_buffer.items():
             # Read Excel sheet
@@ -168,16 +192,21 @@ def data_validation_orchestrator(filepath: pathlib.Path | str = None,
         # Remove empty crosswalks (for efficiency)
         column_crosswalk = {k: v for k, v in column_crosswalk.items() if v}
 
+        if debug:
+            print("Column Crosswalk:")
+            print(column_crosswalk)
+
         origin_date_cols = __create_col_map(mapping_buffer, 'date', origin_field_col, origin_field_type_col,
                                             target_field_col)
         target_date_cols = __create_col_map(mapping_buffer, 'date', target_field_col, target_field_type_col,
                                             origin_field_col)
 
-        # change type of date columns in mapping dict
+        # change type of datecols in maping dict
         temp_map_dict = []
         for cur_col_map in mapping_dict:
-            temp_col_dict = {"baseline_col_name": cur_col_map["baseline_col_name"],
-                             "validate_col_name": cur_col_map["validate_col_name"]}
+            temp_col_dict = {}
+            temp_col_dict["baseline_col_name"] = cur_col_map["baseline_col_name"]
+            temp_col_dict["validate_col_name"] = cur_col_map["validate_col_name"]
             if 'date' not in cur_col_map['common_col_type']:
                 temp_col_dict["common_col_type"] = cur_col_map["common_col_type"]
             else:
@@ -266,26 +295,26 @@ def data_validation_orchestrator(filepath: pathlib.Path | str = None,
         print("Col Difference")
         print(cur_validator.col_difference)
         print()
-        print("Dupplicated Rows")
+        print("Duplicated Rows")
         print(cur_validator.duplicated_rows)
         cur_validator.check_equality()
 
         cur_validator.existence_result.to_excel(output_folder / f'{table_name}_Existence_Result.xlsx', index=False)
-        cur_validator.equality_result.rename(columns={'origin': 'Source', 'target': 'Workday'}).to_excel(
+        cur_validator.equality_result.rename(columns={'origin': origin_name,
+                                                      'target': target_name}).to_excel(
             output_folder / f'{table_name}_Equality_Result.xlsx')
         print(f"****************************************************************************************")
-        print(f"DONE")
+        print(f"{table_name} - DONE")
         print(f"****************************************************************************************")
         print()
 
 
 def read_dataset(filepath: str | pathlib.Path = None,
-                 dataset_name: str = "baseline dataset",
+                 dataset_name: str = "baseline",
                  encoding: str = 'latin',
                  date_cols: dict = None,
                  round_cols: dict = None,
                  ) -> pd.DataFrame | None:
-
     if filepath is None:
         return None
     else:
@@ -357,7 +386,19 @@ class Validator:
     @origin_data.setter
     def origin_data(self, new_path: pathlib.Path | str):
         self.__origin_data = read_dataset(new_path, "baseline")
+        self.__name_mapping = None
+        self.__type_mapping = None
         self.__mapping_checked = False
+        self.__ffill_checked = False
+        self.__ffill_applied = False
+        self.__preprocessing_checked = False
+        self.__preprocessing_map = {}
+        self.__preprocessing_errors = {}
+        self.__preprocessing_applied = False
+        self.__crosswalk_checked = False
+        self.__crosswalk_map = {}
+        self.__crosswalk_errors = {}
+        self.__crosswalk_applied = False
         self.__existence_checked = False
         self.__equality_checked = False
 
@@ -368,7 +409,11 @@ class Validator:
     @target_data.setter
     def target_data(self, new_path: pathlib.Path | str):
         self.__target_data = read_dataset(new_path, "validate")
+        self.__name_mapping = None
+        self.__type_mapping = None
         self.__mapping_checked = False
+        self.__ffill_checked = False
+        self.__ffill_applied = False
         self.__existence_checked = False
         self.__equality_checked = False
 
@@ -402,6 +447,90 @@ class Validator:
         self.__col_id = new_col
         self.__existence_checked = False
         self.__equality_checked = False
+
+    @property
+    def col_prep(self):
+        return self.__col_prep
+
+    @col_prep.setter
+    def col_prep(self, new_col_prep: list):
+        self.__col_prep = new_col_prep
+        self.__preprocessing_checked = False
+        self.__preprocessing_map = {}
+        self.__preprocessing_errors = {}
+        self.__preprocessing_applied = False
+        self.__crosswalk_checked = False
+        self.__crosswalk_map = {}
+        self.__crosswalk_errors = {}
+        self.__crosswalk_applied = False
+        self.__existence_checked = False
+        self.__equality_checked = False
+
+    @property
+    def preprocessing_errors(self):
+        return self.__preprocessing_errors
+
+    @property
+    def col_crosswalk(self):
+        return self.__col_crosswalk
+
+    @col_crosswalk.setter
+    def col_crosswalk(self, new_col_crosswalk: dict):
+        self.__col_crosswalk = new_col_crosswalk
+        self.__crosswalk_checked = False
+        self.__crosswalk_map = {}
+        self.__crosswalk_errors = {}
+        self.__crosswalk_applied = False
+        self.__existence_checked = False
+        self.__equality_checked = False
+
+    @property
+    def origin_ffill_in(self):
+        return self.__origin_ffill_in
+
+    @origin_ffill_in.setter
+    def origin_ffill_in(self, new_cols_ffill: list):
+        self.__origin_ffill_in = new_cols_ffill
+        self.__origin_ffill = []
+        self.__origin_ffill_error = []
+        self.__ffill_checked = False
+        self.__ffill_applied = False
+        self.__preprocessing_applied = False
+        self.__crosswalk_applied = False
+        self.__existence_checked = False
+        self.__equality_checked = False
+
+    @property
+    def origin_ffill(self):
+        return self.__origin_ffill
+
+    @property
+    def origin_ffill_error(self):
+        return self.__origin_ffill_error
+
+    @property
+    def target_ffill_in(self):
+        return self.__target_ffill_in
+
+    @target_ffill_in.setter
+    def target_ffill_in(self, new_cols_ffill: list):
+        self.__target_ffill_in = new_cols_ffill
+        self.__target_ffill = []
+        self.__target_ffill_error = []
+        self.__ffill_checked = False
+        self.__ffill_applied = False
+        self.__preprocessing_applied = False
+        self.__crosswalk_applied = False
+        self.__existence_checked = False
+        self.__equality_checked = False
+
+    @property
+    def target_ffill(self):
+        return self.__target_ffill
+
+    @property
+    def target_ffill_error(self):
+        return self.__target_ffill_error
 
     @property
     def existence_result(self):
@@ -444,23 +573,35 @@ class Validator:
                  validate_filepath: pathlib.Path | str = None,
                  column_mapping: list = None,
                  col_id: str = None,
+                 column_preprocessing: dict = None,
+                 column_crosswalk: dict = None,
                  baseline_date_cols: dict = None,
                  validate_date_cols: dict = None,
                  baseline_round_cols: dict = None,
                  validate_round_cols: dict = None,
-                 baseline_encoding: str = 'latin',
+                 baseline_encoding: str = 'utf-8',
                  validate_encoding: str = 'utf-8',
                  unify_text: bool = False,
                  text_cols: list = None,
+                 origin_cols_ffill: list = None,
+                 target_cols_ffill: list = None,
                  ):
 
-        # Inner variables for processing
+        # Internal variables for processing
         self.__name_mapping = None
         self.__type_mapping = None
+        self.__origin_ffill = []
+        self.__origin_ffill_error = []
+        self.__target_ffill = []
+        self.__target_ffill_error = []
+        self.__preprocessing_map = {}
+        self.__preprocessing_errors = {}
+        self.__crosswalk_map = {}
+        self.__crosswalk_errors = {}
         self.__origin_data_for_validation = None
         self.__target_data_for_validation = None
 
-        # Inner variables for storing validation results
+        # Internal variables for storing validation results
         self.__existence_result = None
         self.__equality_result = None
         self.__row_difference = None
@@ -469,12 +610,18 @@ class Validator:
         self.__origin_rows_not_in_target = None
         self.__target_rows_not_in_origin = None
 
-        # Flags for different validations
+        # Flags for process tracking
         self.__mapping_checked = False
+        self.__ffill_checked = False
+        self.__ffill_applied = False
+        self.__preprocessing_checked = False
+        self.__preprocessing_applied = False
+        self.__crosswalk_checked = False
+        self.__crosswalk_applied = False
         self.__existence_checked = False
         self.__equality_checked = False
 
-        # Variables for pre-processing
+        # Variables for text cleaning
         self.__unify_text = unify_text
         self.__text_cols = text_cols
 
@@ -497,6 +644,22 @@ class Validator:
         self.__col_map = column_mapping
         if column_mapping:
             self.validate_col_map()
+
+        # COLUMNS TO FORWARD FILL
+        self.__origin_ffill_in = origin_cols_ffill
+        self.__target_ffill_in = target_cols_ffill
+        if origin_cols_ffill or target_cols_ffill:
+            self.validate_col_ffill()
+
+        # COLUMN PREPROCESSING
+        self.__col_prep = column_preprocessing
+        if column_preprocessing:
+            self.validate_col_preprocesing()
+
+        # COLUMN CROSSWALK
+        self.__col_crosswalk = column_crosswalk
+        if column_crosswalk:
+            self.validate_col_crosswalk()
 
     def validate_col_map(self):
         """Checks if the mapping specified is valid given the datasets configured.
@@ -600,18 +763,14 @@ class Validator:
 
             # If any type is incorrect, throw a warning.
             if origin_cols_mistype:
-                warnings.warn(generate_warn_message(origin_cols_mistype, warn_type='type',
-                                                    dataset_name='baseline dataset'))
+                warnings.warn(generate_warn_message(origin_cols_mistype, warn_type='type', dataset_name='baseline'))
             if target_cols_mistype:
-                warnings.warn(generate_warn_message(target_cols_mistype, warn_type='type',
-                                                    dataset_name='validate dataset'))
+                warnings.warn(generate_warn_message(target_cols_mistype, warn_type='type', dataset_name='validate'))
 
             # If any column is missing on either dataset, throw warning and end
             if origin_cols_missing or target_cols_missing:
-                warnings.warn(generate_warn_message(origin_cols_missing, warn_type='missing',
-                                                    dataset_name='baseline dataset'))
-                warnings.warn(generate_warn_message(target_cols_missing, warn_type='missing',
-                                                    dataset_name='validate dataset'))
+                warnings.warn(generate_warn_message(origin_cols_missing, warn_type='missing', dataset_name='baseline'))
+                warnings.warn(generate_warn_message(target_cols_missing, warn_type='missing', dataset_name='validate'))
             elif name_map_temp:
                 # Save mapping. Check if there is something saved in temp variable, as it checks for
                 # existence of respective columns on both datasets
@@ -622,10 +781,215 @@ class Validator:
         else:
             print("No datasets configured to validate mapping.")
 
+    def validate_col_ffill(self):
+        """Checks if the specified columns to forward fill are valid given the datasets configured.
+        The input must be a list of column names which should exist in the respective dataset.
+        No error will be raised if they do not. After the check is over, any columns not found
+        will be stored in an internal variable. Errors won't stop other validations.
+        """
+
+        if self.__ffill_checked:
+            warnings.warn("""Forward Fill has already been checked for the current configuration.""")
+            return
+
+        if not self.__origin_ffill_in and not self.__target_ffill_in:
+            warnings.warn("No columns to forward fill! Forward Fill marked as checked!")
+            self.__ffill_checked = True
+            return
+
+        warn_message = """Warning:
+            No {} dataset has been configured. Cannot validate forward fill.
+            """
+
+        if self.__origin_data is None and self.__origin_ffill_in:
+            warnings.warn(warn_message.format("baseline"))
+        else:
+            for col_name in self.__origin_ffill_in:
+                origin_cur_col_result = self.__validate_column(col_name, None, 'origin')
+                # if column does not exist, exclude it
+                if not origin_cur_col_result['exists']:
+                    self.__origin_ffill_error.append(col_name)
+                else:
+                    self.__origin_ffill.append(col_name)
+
+        if self.__target_data is None and self.__target_ffill_in:
+            warnings.warn(warn_message.format("validate"))
+        else:
+            for col_name in self.__target_ffill_in:
+                target_cur_col_result = self.__validate_column(col_name, None, 'target')
+                # if column does not exist, exclude it
+                if not target_cur_col_result['exists']:
+                    self.__target_ffill_error.append(col_name)
+                else:
+                    self.__target_ffill.append(col_name)
+
+        self.__ffill_checked = True
+
+    def validate_col_preprocesing(self):
+        """Checks if the preprocessing specified is valid given the datasets configured.
+         The preprocessing must be a dictionary with the format:
+             - col_name: str -> prep string (str)
+        The passed columns must exist in the origin dataset. The preprocessing is a string with code to
+        generate either a dictionary, specifying how to map values, or a function that will be applied
+        to the whole column. After the check is complete, any errors found will be stored in an
+        internal variable. Errors won't stop other validations, like existence or equality.
+        """
+
+        if self.__preprocessing_checked:
+            warnings.warn("""Preprocessing has already been checked for the current configuration.""")
+            return
+
+        if not self.__col_prep:
+            warnings.warn("No preprocessing configured to validate! Preprocessing marked as checked!")
+            self.__preprocessing_checked = True
+            return
+
+        warn_message = """Warning:
+            No {} dataset has been configured. Cannot validate preprocessing.
+            """
+
+        if self.__origin_data is None:
+            warnings.warn(warn_message.format("baseline"))
+            return
+        else:
+            for col_name, col_prep in self.__col_prep.items():
+                if col_prep is np.nan:
+                    continue
+                cur_error = ''
+                origin_cur_col_result = self.__validate_column(col_name, None, 'origin')
+                # if column does not exist
+                if not origin_cur_col_result['exists']:
+                    # save the error
+                    cur_error = 'Column not present in origin dataset'
+                # if column exists
+                else:
+                    # validate that prep string is a dictionary or a function
+                    col_prep_evaluated = eval(col_prep)
+                    if not callable(col_prep_evaluated) and not isinstance(col_prep_evaluated, dict):
+                        cur_error = 'Prep code not a dictionary or function'
+
+                if cur_error:
+                    self.__preprocessing_errors[col_name] = {'col_prep': col_prep, 'error': cur_error}
+                else:
+                    self.__preprocessing_map[col_name] = col_prep_evaluated
+
+            self.__preprocessing_checked = True
+
+    def validate_col_crosswalk(self):
+        """Checks if the crosswalk specified is valid given the datasets configured.
+         The crosswalk must be a nested 2-level dictionary with the format:
+             - col_name: str -> { search_val -> replace_val }
+        The columns in the first level must exist in the origin dataset. The search value should be
+        an existing value in the column, but no error will be raised if it does not. After the check
+        is complete, any errors found (incorrect column or non existent value) will be stored in an
+        internal variable. Errors won't stop other validations, like existence or equality.
+        """
+
+        if self.__crosswalk_checked:
+            warnings.warn("""Crosswalk has already been checked for the current configuration.""")
+            return
+
+        if not self.__col_crosswalk:
+            warnings.warn("No crosswalk configured to validate! Crosswalk marked as checked!")
+            self.__crosswalk_checked = True
+            return
+
+        warn_message = """Warning:
+            No {} dataset has been configured. Cannot validate crosswalk.
+            """
+
+        if self.__origin_data is None:
+            warnings.warn(warn_message.format("baseline"))
+            return
+        else:
+            for col_name, values in self.__col_crosswalk.items():
+                error_vals = {}
+                existing_vals = {}
+                cur_error = ''
+
+                origin_cur_col_result = self.__validate_column(col_name, None, 'origin')
+                # if column does not exist
+                if not origin_cur_col_result['exists']:
+                    # save the error
+                    cur_error = 'Column not present in origin dataset'
+                    error_vals = values
+                # if column exists
+                else:
+                    # check the value crosswalk is in dictionary format
+                    if not isinstance(values, dict):
+                        cur_error = 'Value crosswalk should be a dictionary'
+                        error_vals = values
+                    else:
+                        # check the search values are present in the column values
+                        col_unique_values = self.__origin_data[col_name].unique()
+                        cur_error = 'Search value not found'
+                        for search_val, replace_val in values.items():
+                            if search_val not in col_unique_values:
+                                error_vals[search_val] = replace_val
+                            else:
+                                existing_vals[search_val] = replace_val
+
+                if error_vals:
+                    self.__crosswalk_errors[col_name] = {'values': error_vals, 'error': cur_error}
+                if existing_vals:
+                    self.__crosswalk_map[col_name] = existing_vals
+
+            self.__crosswalk_checked = True
+
+    def apply_ffill(self):
+        if self.__ffill_applied:
+            warnings.warn("""Forward-Fill has already been applied for the current datasets.""")
+            return
+
+        if not self.__ffill_checked:
+            self.validate_col_ffill()
+
+        for col_name in self.__origin_ffill:
+            self.__origin_data_for_validation[col_name].ffill(inplace=True)
+        for col_name in self.__target_ffill:
+            self.__target_data_for_validation[col_name].ffill(inplace=True)
+
+        self.__ffill_applied = True
+
+    def apply_preprocessing(self):
+        if self.__preprocessing_applied:
+            warnings.warn("""Preprocessing has already been applied for the current configuration.""")
+            return
+
+        if not self.__preprocessing_checked:
+            self.validate_col_preprocesing()
+
+        for col_name, col_prep in self.__preprocessing_map.items():
+            if isinstance(col_prep, dict):
+                self.__origin_data_for_validation[col_name].replace(col_prep, inplace=True)
+            elif callable(col_prep):
+                self.__origin_data_for_validation[col_name] = self.__origin_data_for_validation[col_name].apply(
+                    col_prep)
+            else:
+                raise Exception(f"""Incorrect preprocessing type.
+                Expected dictionary or function. Got '{col_prep}' ({type(col_prep)})""")
+
+        self.__preprocessing_applied = True
+
+    def apply_crosswalk(self):
+        if self.__crosswalk_applied:
+            warnings.warn("""Crosswalk has already been applied for the current configuration.""")
+            return
+
+        if not self.__crosswalk_checked:
+            self.validate_col_crosswalk()
+
+        if isinstance(self.__crosswalk_map, dict):
+            self.__origin_data_for_validation.replace(self.__crosswalk_map, inplace=True)
+        else:
+            raise Exception(f"""Incorrect crosswalk type.
+            Expected dictionary. Got {type(self.__crosswalk_map)}""")
+
+        self.__crosswalk_applied = True
+
     def check_existence(self):
         if self.__existence_checked:
-            warnings.warn("""Existence has already been checked for the current configuration.
-            Modify the datasets or column mapping and try again.""")
+            warnings.warn("""Existence has already been checked for the current configuration.""")
             return self.__existence_result
 
         # Only do something if both datasets are configured.
@@ -636,25 +1000,33 @@ class Validator:
             else:
                 warnings.warn("""Warning:
                 No mapping configured. Assuming both datasets have the same column names and types.""")
-                self.__target_data_for_validation = self.__target_data
+                self.__target_data_for_validation = self.__target_data.copy(deep=True)
                 self.__name_mapping = {col_name: col_name for col_name in self.__origin_data.columns}
                 self.__type_mapping = {col_name: col_type for col_name, col_type in self.__origin_data.dtypes.items()}
-            self.__origin_data_for_validation = self.__origin_data
+            self.__origin_data_for_validation = self.__origin_data.copy(deep=True)
+
+            # Apply forward fill if it hasn't been applied
+            if not self.__ffill_applied:
+                self.apply_ffill()
 
             # How to verify existence:
             # 0. Verify data shape
             # 0.1 Count duplicates
-            self.__duplicated_rows = {'origin': self.__origin_data_for_validation.duplicated(subset=self.__col_id).sum(),
-                                      'target': self.__target_data_for_validation.duplicated(subset=self.__col_id).sum()}
+            self.__duplicated_rows = {
+                'origin': self.__origin_data_for_validation.duplicated(subset=self.__col_id).sum(),
+                'target': self.__target_data_for_validation.duplicated(subset=self.__col_id).sum()}
 
             # 0.2 Remove duplicates, otherwise the Magic (step 4) doesn't work
             self.__origin_data_for_validation = self.__origin_data_for_validation.drop_duplicates(subset=self.__col_id)
             self.__target_data_for_validation = self.__target_data_for_validation.drop_duplicates(subset=self.__col_id)
             # 0.3 Number of rows
-            self.__row_difference = self.__origin_data_for_validation.shape[0] - self.__target_data_for_validation.shape[0]
+            self.__row_difference = self.__origin_data_for_validation.shape[0] - \
+                                    self.__target_data_for_validation.shape[0]
             # 0.4 Columns
-            origin_cols_not_in_target = set(self.__origin_data_for_validation.columns) - set(self.__target_data_for_validation.columns)
-            target_cols_not_in_origin = set(self.__target_data_for_validation.columns) - set(self.__origin_data_for_validation.columns)
+            origin_cols_not_in_target = set(self.__origin_data_for_validation.columns) - set(
+                self.__target_data_for_validation.columns)
+            target_cols_not_in_origin = set(self.__target_data_for_validation.columns) - set(
+                self.__origin_data_for_validation.columns)
             self.__col_difference = {'origin_cols_not_in_target': origin_cols_not_in_target,
                                      'target_cols_not_in_origin': target_cols_not_in_origin}
             # 0.5 Text cleaning, if specified
@@ -667,7 +1039,8 @@ class Validator:
             # 1.1 Select columns from origin and target that are in the column mapping
             self.__origin_data_for_validation = self.__origin_data_for_validation[self.__name_mapping.values()]
             # 1.2 Target columns selected based on origin columns to guarantee same column order
-            self.__target_data_for_validation = self.__target_data_for_validation[self.__origin_data_for_validation.columns]
+            self.__target_data_for_validation = self.__target_data_for_validation[
+                self.__origin_data_for_validation.columns]
 
             # 2. Match data types for the columns
             for col_name, col_type in self.__type_mapping.items():
@@ -678,12 +1051,22 @@ class Validator:
                     self.__target_data_for_validation[col_name] = self.__target_data_for_validation[
                         col_name].astype('string').str.replace(".0", "")
                 else:
-                    if self.__origin_data_for_validation[col_name].dtype != col_type:
-                        self.__origin_data_for_validation[col_name] = self.__origin_data_for_validation[col_name].astype(
+                    if self.__origin_data_for_validation[col_name].dtype != col_type and col_type != 'date':
+                        self.__origin_data_for_validation[col_name] = self.__origin_data_for_validation[
+                            col_name].astype(
                             col_type)
-                    if self.__target_data_for_validation[col_name].dtype != col_type:
-                        self.__target_data_for_validation[col_name] = self.__target_data_for_validation[col_name].astype(
+                    if self.__target_data_for_validation[col_name].dtype != col_type and col_type != 'date':
+                        self.__target_data_for_validation[col_name] = self.__target_data_for_validation[
+                            col_name].astype(
                             col_type)
+
+            # Apply preprocessing if it hasn't been applied
+            if not self.__preprocessing_applied:
+                self.apply_preprocessing()
+
+            # Apply crosswalk if it hasn't been applied
+            if not self.__crosswalk_applied:
+                self.apply_crosswalk()
 
             # 3. Align rows
             # 3.0 Generate a column to mark rows that are different in both datasets
@@ -693,14 +1076,17 @@ class Validator:
             self.__origin_data_for_validation.set_index(self.__col_id, inplace=True)
             self.__target_data_for_validation.set_index(self.__col_id, inplace=True)
             # 3.2 Align based on index (which are the indexes now)
-            origin_temp, target_temp = self.__origin_data_for_validation.align(self.__target_data_for_validation, axis=0)
+            origin_temp, target_temp = self.__origin_data_for_validation.align(self.__target_data_for_validation,
+                                                                               axis=0)
             # 3.3 Rows in one dataset that are not in the other are marked as NAs in 'check' column
             #     Extract them for possible analysis later on
             self.__target_rows_not_in_origin = target_temp[origin_temp.check.isna()].reset_index().drop(columns='check')
             self.__origin_rows_not_in_target = origin_temp[target_temp.check.isna()].reset_index().drop(columns='check')
             # 3.4 Filter out records from target not in origin
-            self.__origin_data_for_validation = origin_temp[~origin_temp.check.isna()].reset_index().drop(columns='check')
-            self.__target_data_for_validation = target_temp[~origin_temp.check.isna()].reset_index().drop(columns='check')
+            self.__origin_data_for_validation = origin_temp[~origin_temp.check.isna()].reset_index().drop(
+                columns='check')
+            self.__target_data_for_validation = target_temp[~origin_temp.check.isna()].reset_index().drop(
+                columns='check')
 
             # 4. Magic
             # Using NA values, if there are NAs in the target (isNA == True) that are not in origin (isNA == False),
@@ -755,7 +1141,7 @@ class Validator:
             for text_col in self.__text_cols:
                 # Unify apostrophe
                 self.__origin_data_for_validation.loc[:, text_col] = \
-                        self.__origin_data_for_validation[text_col].str.replace(u'\u0092', u"\u0027")
+                    self.__origin_data_for_validation[text_col].str.replace(u'\u0092', u"\u0027")
                 self.__origin_data_for_validation.loc[:, text_col] = \
                     self.__origin_data_for_validation[text_col].str.replace(u'’', u"\u0027")
 
